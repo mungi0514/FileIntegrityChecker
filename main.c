@@ -1,40 +1,43 @@
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <dirent.h>
-#include <sys/stat.h>
-#include <openssl/evp.h>
+#include <stdlib.h> // 동적 메모리 할당(malloc, free), 프로그램 종료(exit)
+#include <string.h> // 문자열 처리(strcpy, strcmp, strtok)
+#include <dirent.h> // 디렉토리 탐색(opendir, readdir, closedir)
+#include <sys/stat.h> // 파일 상태 정보(파일인지 디렉토리인지)
+#include <openssl/evp.h> // sha-256 해시 계산
 
 #define HASH_LEN EVP_MAX_MD_SIZE
-#define BASELINE_FILE "integrity_baseline.txt"
-#define PATH_MAX 4096 // macOS's typical path length limit
+#define BASELINE_FILE "integrity_baseline.txt" // 기준 파일 이름
+#define PATH_MAX 4096 // macOS's typical path length limit // 파일 경로 최대 길이: 4096 정의
 
-// 연결 리스트로 기준 파일 정보를 메모리에 저장하기 위한 구조체
+// 기준 파일 정보를 연결 리스트로 메모리에 저장하기 위한 구조체
 typedef struct FileInfo {
-    char path[PATH_MAX];
-    char hash[HASH_LEN * 2 + 1]; // Hex string format
-    int verified; // 검증 시 확인되었는지 여부를 체크하는 플래그
-    struct FileInfo *next;
+    char path[PATH_MAX]; // 파일 경로
+    char hash[HASH_LEN * 2 + 1]; // sha-256 해시 값 (16진수 문자열)
+    int verified; // 검증 시 확인 여부 체커
+    struct FileInfo *next; // 다음 파일 정보 포인터 (연결 리스트)
 } FileInfo;
 
 // SHA-256 해시 계산 함수
 int calculate_sha256(const char *path, unsigned char *hash_out) {
-    FILE *file = fopen(path, "rb");
-    if (!file) return 0;
+    FILE *file = fopen(path, "rb"); // 바이너리 읽기 모드로 파일 열기
+    if (!file) return 0; // 파일 열기 실패 시 0 반환
 
+    // OpenSSL SHA-256 해시 계산
     EVP_MD_CTX *mdctx;
     const EVP_MD *md = EVP_sha256();
     unsigned char buffer[4096];
     size_t bytes_read;
     unsigned int hash_len;
 
-    mdctx = EVP_MD_CTX_new();
-    EVP_DigestInit_ex(mdctx, md, NULL);
+    mdctx = EVP_MD_CTX_new(); // 해시 컨텍스트 생성
+    EVP_DigestInit_ex(mdctx, md, NULL); // 해시 초기화
 
+    // 파일을 읽어(4096바이트씩) 해시 업데이트
     while ((bytes_read = fread(buffer, 1, sizeof(buffer), file))) {
         EVP_DigestUpdate(mdctx, buffer, bytes_read);
     }
 
+    // 최종 해시 계산, 결과 저장
     EVP_DigestFinal_ex(mdctx, hash_out, &hash_len);
     EVP_MD_CTX_free(mdctx);
     fclose(file);
@@ -43,6 +46,7 @@ int calculate_sha256(const char *path, unsigned char *hash_out) {
 }
 
 // 해시 바이트를 16진수 문자열로 변환하는 함수
+// calculate_sha256 함수에서 생성된 바이트 배열을 사람이 읽을 수 있는 16진수 문자열로 변환
 void hash_to_hex(const unsigned char *hash, char *hex_string, int len) {
     for (int i = 0; i < len; i++) {
         sprintf(hex_string + (i * 2), "%02x", hash[i]);
@@ -51,6 +55,7 @@ void hash_to_hex(const unsigned char *hash, char *hex_string, int len) {
 }
 
 // 재귀적으로 디렉토리를 탐색하며 해시를 계산하고 파일에 쓰는 함수
+// 기준 파일 생성
 void generate_hashes_recursive(const char *base_path, FILE *out_file) {
     DIR *dir = opendir(base_path);
     if (!dir) {
@@ -58,18 +63,20 @@ void generate_hashes_recursive(const char *base_path, FILE *out_file) {
         return;
     }
 
-    struct dirent *entry;
+    struct dirent *entry; // 디렉토리 안의 항목을 읽기 위한 구조체 
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
-            continue;
+            continue; // 현재 디렉토리(.)와 부모 디렉토리(..)는 건너뜀
         }
 
-        char path[PATH_MAX];
+        char path[PATH_MAX]; // 전체 경로를 저장할 버퍼
         snprintf(path, sizeof(path), "%s/%s", base_path, entry->d_name);
 
+        // 파일 상태 정보 가져오기
         struct stat path_stat;
         stat(path, &path_stat);
 
+        // 디렉토리면 재귀 호출, 파일이면 해시 계산 및 기록
         if (S_ISDIR(path_stat.st_mode)) {
             generate_hashes_recursive(path, out_file);
         } else if (S_ISREG(path_stat.st_mode)) {
@@ -86,30 +93,31 @@ void generate_hashes_recursive(const char *base_path, FILE *out_file) {
     closedir(dir);
 }
 
-// 기준 파일을 읽어 연결 리스트로 로드하는 함수
+// 기준 파일을 읽어 연결 리스트(메모리)로 로드하는 함수
 FileInfo* load_baseline() {
-    FILE *file = fopen(BASELINE_FILE, "r");
+    FILE *file = fopen(BASELINE_FILE, "r"); // 읽기 모드로 기준 파일 열기
     if (!file) return NULL;
 
-    FileInfo *head = NULL;
-    char line[PATH_MAX + HASH_LEN * 2 + 2];
+    FileInfo *head = NULL; // 연결 리스트의 헤드 포인터
+    char line[PATH_MAX + HASH_LEN * 2 + 2]; // 한 줄을 저장할 버퍼
     while (fgets(line, sizeof(line), file)) {
         line[strcspn(line, "\n")] = 0; // 줄바꿈 문자 제거
 
-        char *path = strtok(line, ",");
-        char *hash = strtok(NULL, ",");
+        char *path = strtok(line, ","); // 쉼표로 구분하여 파일 경로와 해시 분리
+        char *hash = strtok(NULL, ","); // 두 번째 토큰은 해시 값
 
+        // 새로운 FileInfo 노드 생성 및 연결 리스트에 추가
         if (path && hash) {
             FileInfo *new_node = (FileInfo*)malloc(sizeof(FileInfo));
             strncpy(new_node->path, path, PATH_MAX - 1);
             strncpy(new_node->hash, hash, HASH_LEN * 2);
-            new_node->verified = 0;
-            new_node->next = head;
-            head = new_node;
+            new_node->verified = 0; // 체커 0으로 초기화
+            new_node->next = head; // 새 노드를 리스트의 앞에 추가
+            head = new_node; // 헤드 업데이트
         }
     }
     fclose(file);
-    return head;
+    return head; // 연결 리스트의 헤드 반환
 }
 
 // 재귀적으로 디렉토리를 탐색하며 무결성을 검증하는 함수
@@ -118,6 +126,7 @@ void verify_hashes_recursive(const char *base_path, FileInfo *baseline_head) {
     if (!dir) return;
 
     struct dirent *entry;
+    // 디렉토리 항목을 하나씩 읽기
     while ((entry = readdir(dir)) != NULL) {
         if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
             continue;
@@ -131,19 +140,22 @@ void verify_hashes_recursive(const char *base_path, FileInfo *baseline_head) {
 
         if (S_ISDIR(path_stat.st_mode)) {
             verify_hashes_recursive(path, baseline_head);
-        } else if (S_ISREG(path_stat.st_mode)) {
+        } else if (S_ISREG(path_stat.st_mode)/* 파일이라면 */) {
+            // 현재 파일의 해시 계산
             unsigned char current_hash_bytes[HASH_LEN];
             char current_hex_hash[HASH_LEN * 2 + 1];
 
             if (!calculate_sha256(path, current_hash_bytes)) continue;
             hash_to_hex(current_hash_bytes, current_hex_hash, EVP_MD_size(EVP_sha256()));
 
-            FileInfo *current = baseline_head;
-            int found = 0;
+            FileInfo *current = baseline_head; // 기준 파일 리스트의 헤드부터 탐색
+            int found = 0; // 파일이 기준 파일에 있는지 여부 체커
             while (current) {
+                // 기준 파일에서 현재 파일 경로와 일치하는 항목 찾기
                 if (strcmp(current->path, path) == 0) {
-                    found = 1;
-                    current->verified = 1;
+                    found = 1; // 찾음 표시
+                    current->verified = 1; // 검증됨 표시
+                    // 해시 값 불일치? -> 변경됨
                     if (strcmp(current->hash, current_hex_hash) != 0) {
                         printf("변경됨: %s\n", path);
                     }
@@ -151,6 +163,7 @@ void verify_hashes_recursive(const char *base_path, FileInfo *baseline_head) {
                 }
                 current = current->next;
             }
+            // 기준 정보에 없는 파일 -> 추가됨
             if (!found) {
                 printf("추가됨: %s\n", path);
             }
@@ -159,7 +172,7 @@ void verify_hashes_recursive(const char *base_path, FileInfo *baseline_head) {
     closedir(dir);
 }
 
-
+// 메인 함수: 프로그램 진입점
 int main(int argc, char *argv[]) {
     if (argc != 3) {
         fprintf(stderr, "사용법: %s [-g | -v] <디렉토리 경로>\n", argv[0]);
@@ -168,11 +181,11 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    const char *mode = argv[1];
-    const char *dir_path = argv[2];
+    const char *mode = argv[1]; // 두번째 인자: 모드 (-g 또는 -v)
+    const char *dir_path = argv[2]; // 세번째 인자: 디렉토리 경로
 
     if (strcmp(mode, "-g") == 0) {
-        FILE *out_file = fopen(BASELINE_FILE, "w");
+        FILE *out_file = fopen(BASELINE_FILE, "w"); // 쓰기 모드로 기준 파일 열기 (없으면 생성)
         if (!out_file) {
             perror("기준 파일을 생성할 수 없습니다");
             return 1;
@@ -183,12 +196,13 @@ int main(int argc, char *argv[]) {
         printf("기준 파일 생성이 완료되었습니다.\n");
     } else if (strcmp(mode, "-v") == 0) {
         printf("무결성 검증을 시작합니다...\n");
-        FileInfo *baseline_head = load_baseline();
+        FileInfo *baseline_head = load_baseline(); // 기준 파일 로드
         if (!baseline_head) {
             fprintf(stderr, "오류: '%s' 파일을 찾을 수 없거나 읽을 수 없습니다. 먼저 -g 옵션으로 생성해주세요.\n", BASELINE_FILE);
             return 1;
         }
 
+        // 무결성 검증 함수 호출
         verify_hashes_recursive(dir_path, baseline_head);
 
         // 기준 파일에는 있지만 실제로는 없는 파일 (삭제된 파일) 찾기
@@ -199,7 +213,7 @@ int main(int argc, char *argv[]) {
             }
             FileInfo *temp = current;
             current = current->next;
-            free(temp); // 메모리 해제
+            free(temp); // 메모리 해제 (메모리 누수 방지)
         }
         printf("무결성 검증이 완료되었습니다.\n");
     } else {
