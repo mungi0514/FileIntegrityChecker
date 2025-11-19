@@ -13,7 +13,7 @@
 typedef struct FileInfo {
     char path[PATH_MAX]; // 파일 경로
     char hash[HASH_LEN * 2 + 1]; // sha-256 해시 값 (16진수 문자열)
-    int verified; // 검증 시 확인 여부 체커
+    int verified; // 검증 시 사용 (체크 표시 역할)
     struct FileInfo *next; // 다음 파일 정보 포인터 (연결 리스트)
 } FileInfo;
 
@@ -174,52 +174,88 @@ void verify_hashes_recursive(const char *base_path, FileInfo *baseline_head) {
 
 // 메인 함수: 프로그램 진입점
 int main(int argc, char *argv[]) {
-    if (argc != 3) {
-        fprintf(stderr, "사용법: %s [-g | -v] <디렉토리 경로>\n", argv[0]);
-        fprintf(stderr, "  -g: 지정된 경로의 파일 무결성 기준 파일을 생성합니다.\n");
-        fprintf(stderr, "  -v: 지정된 경로의 파일 무결성을 기준 파일과 비교하여 검증합니다.\n");
-        return 1;
+    int choice;
+
+    // 프로그램이 종료(0번 선택)될 때까지 무한 반복
+    while (1) {
+        printf("\n--- 파일 무결성 검사기 ---\n");
+        printf("1. 기준 파일 생성 (Generate Baseline)\n");
+        printf("2. 무결성 검사 (Verify Integrity)\n");
+        printf("0. 프로그램 종료 (Exit)\n");
+        printf("----------------------------------\n");
+        printf("메뉴를 선택하세요: ");
+
+        // 사용자에게 메뉴 번호를 입력받음
+        if (scanf("%d", &choice) != 1) {
+            printf("잘못된 입력입니다. 숫자(0, 1, 2)를 입력해주세요.\n");
+            // scanf가 실패했을 때 입력 버퍼를 비워주는 작업
+            int c;
+            while ((c = getchar()) != '\n' && c != EOF);
+            continue; // 메뉴를 다시 보여줌
+        }
+
+        // scanf 사용 후 입력 버퍼에 남아있는 줄바꿈 문자(\n)를 제거
+        int c;
+        while ((c = getchar()) != '\n' && c != EOF);
+
+        // 경로를 입력받을 변수
+        char dir_path[PATH_MAX];
+
+        // 사용자의 선택에 따라 분기
+        switch (choice) {
+            case 1: // 1. 기준 파일 생성
+                printf("기준을 생성할 디렉토리 경로를 입력하세요: ");
+                // fgets로 공백이 포함된 경로도 입력받을 수 있게 함
+                fgets(dir_path, sizeof(dir_path), stdin);
+                dir_path[strcspn(dir_path, "\n")] = 0; // fgets가 포함한 \n 제거
+
+                FILE *out_file = fopen(BASELINE_FILE, "w");
+                if (!out_file) {
+                    perror("기준 파일을 생성할 수 없습니다");
+                    continue;
+                }
+                printf("기준 파일 생성을 시작합니다: %s\n", BASELINE_FILE);
+                generate_hashes_recursive(dir_path, out_file);
+                fclose(out_file);
+                printf("기준 파일 생성이 완료되었습니다.\n");
+
+                break;
+
+            case 2: // 2. 무결성 검사
+                printf("무결성을 검사할 디렉토리 경로를 입력하세요: ");
+                fgets(dir_path, sizeof(dir_path), stdin);
+                dir_path[strcspn(dir_path, "\n")] = 0; // \n 제거
+
+                printf("무결성 검증을 시작합니다...\n");
+                FileInfo *baseline_head = load_baseline();
+                if (!baseline_head) {
+                    fprintf(stderr, "오류: '%s' 파일을 찾을 수 없거나 읽을 수 없습니다. 먼저 1번 메뉴로 생성해주세요.\n", BASELINE_FILE);
+                    continue;
+                }
+
+                verify_hashes_recursive(dir_path, baseline_head);
+
+                // 삭제된 파일 검사 및 메모리 해제
+                FileInfo *current = baseline_head;
+                while (current) {
+                    if (!current->verified) {
+                        printf("삭제됨: %s\n", current->path);
+                    }
+                    FileInfo *temp = current;
+                    current = current->next;
+                    free(temp); // 메모리 해제
+                }
+                printf("무결성 검증이 완료되었습니다.\n");
+                // --- 로직 끝 ---
+                break;
+
+            case 0: // 0. 프로그램 종료
+                printf("프로그램을 종료합니다.\n");
+                return 0; // main 함수를 종료하여 프로그램 끝내기
+
+            default: // 그 외의 번호
+                printf("알 수 없는 메뉴입니다. 0, 1, 2 중에서 선택하세요.\n");
+                break;
+        }
     }
-
-    const char *mode = argv[1]; // 두번째 인자: 모드 (-g 또는 -v)
-    const char *dir_path = argv[2]; // 세번째 인자: 디렉토리 경로
-
-    if (strcmp(mode, "-g") == 0) {
-        FILE *out_file = fopen(BASELINE_FILE, "w"); // 쓰기 모드로 기준 파일 열기 (없으면 생성)
-        if (!out_file) {
-            perror("기준 파일을 생성할 수 없습니다");
-            return 1;
-        }
-        printf("기준 파일 생성을 시작합니다: %s\n", BASELINE_FILE);
-        generate_hashes_recursive(dir_path, out_file);
-        fclose(out_file);
-        printf("기준 파일 생성이 완료되었습니다.\n");
-    } else if (strcmp(mode, "-v") == 0) {
-        printf("무결성 검증을 시작합니다...\n");
-        FileInfo *baseline_head = load_baseline(); // 기준 파일 로드
-        if (!baseline_head) {
-            fprintf(stderr, "오류: '%s' 파일을 찾을 수 없거나 읽을 수 없습니다. 먼저 -g 옵션으로 생성해주세요.\n", BASELINE_FILE);
-            return 1;
-        }
-
-        // 무결성 검증 함수 호출
-        verify_hashes_recursive(dir_path, baseline_head);
-
-        // 기준 파일에는 있지만 실제로는 없는 파일 (삭제된 파일) 찾기
-        FileInfo *current = baseline_head;
-        while (current) {
-            if (!current->verified) {
-                printf("삭제됨: %s\n", current->path);
-            }
-            FileInfo *temp = current;
-            current = current->next;
-            free(temp); // 메모리 해제 (메모리 누수 방지)
-        }
-        printf("무결성 검증이 완료되었습니다.\n");
-    } else {
-        fprintf(stderr, "알 수 없는 옵션입니다: %s\n", mode);
-        return 1;
-    }
-
-    return 0;
 }
