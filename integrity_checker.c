@@ -86,6 +86,7 @@ void generate_hashes_recursive(const char *base_path, FILE *out_file) {
             if (calculate_sha256(path, hash)) {
                 hash_to_hex(hash, hex_hash, EVP_MD_size(EVP_sha256()));
                 fprintf(out_file, "%s,%s\n", path, hex_hash);
+                system("clear");
                 printf("생성: %s\n", path);
             }
         }
@@ -170,6 +171,10 @@ void verify_hashes_recursive(const char *base_path, FileInfo *baseline_head) {
         }
     }
     closedir(dir);
+}
+
+void aksAgain() {
+
 }
 
 // 메인 함수: 프로그램 진입점
